@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fluctus — демонстрация роя</title>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<style>
+  :root {
+    --bg: #fafaf8;
+    --surface: #ffffff;
+    --line: #dddad2;
+    --ink: #17160f;
+    --ink-dim: #6b6a62;
+    --accent: #c4471f;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+    overflow: hidden;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0 0 auto;
+    height: env(safe-area-inset-top, 0px);
+    z-index: 30;
+    background: var(--bg);
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  .hud {
+    position: fixed;
+    left: 0; right: 0;
+    z-index: 10;
+    padding: 0 20px;
+    pointer-events: none;
+  }
+  .hud-top {
+    top: calc(16px + env(safe-area-inset-top, 0px));
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+  .brand { font-size: 15px; letter-spacing: 0.02em; color: var(--ink); font-weight: 700; }
+  .brand span { color: var(--accent); }
+  .phase-label {
+    font-size: 12px; color: var(--ink-dim); margin-top: 2px;
+    min-height: 16px; transition: opacity 0.3s ease;
+  }
+  .counter { text-align: right; font-size: 12px; color: var(--ink-dim); }
+  .counter b { color: var(--ink); font-weight: 700; }
+
+  .hud-bottom {
+    bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    pointer-events: auto;
+  }
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .btn {
+    appearance: none; border: 1px solid var(--line); background: var(--surface);
+    color: var(--ink); font-size: 13px; font-weight: 500; padding: 11px 18px;
+    border-radius: 999px; cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease;
+    pointer-events: auto; letter-spacing: 0.01em; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .btn:hover { border-color: #b5b2a8; }
+  .btn:active { background: #f1efe9; }
+  .btn:disabled { opacity: 0.35; cursor: default; }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff8f4; font-weight: 600; }
+  .btn-primary:hover { background: #d4531f; }
+  .btn-ghost { background: transparent; width: 34px; height: 34px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 15px; box-shadow: none; }
+
+  .intro {
+    position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; padding: 24px;
+    background: var(--bg); transition: opacity 0.5s ease, visibility 0.5s;
+  }
+  .intro.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+  .intro h1 { font-size: clamp(26px, 6vw, 40px); font-weight: 700; letter-spacing: -0.01em; margin: 0 0 10px; }
+  .intro h1 span { color: var(--accent); }
+  .intro p { font-size: 14px; color: var(--ink-dim); max-width: 400px; line-height: 1.55; margin: 0 0 28px; }
+</style>
+</head>
+<body>
+
+<div class="intro" id="intro">
+  <h1>Рой <span>Fluctus</span></h1>
+  <p>Боты выстраиваются в единую конечность, которая обвивает груз снизу, сбоку и сверху — и поднимает его.</p>
+  <button class="btn btn-primary" id="startBtn">Запустить демонстрацию</button>
+</div>
+
+<div id="stage"></div>
+
+<div class="hud hud-top">
+  <div>
+    <div class="brand">Fluctus<span>.</span></div>
+    <div class="phase-label" id="phaseLabel">&nbsp;</div>
+  </div>
+  <div class="counter">ботов в конечности<br><b id="botCount">0 / 230</b></div>
+</div>
+
+<div class="hud hud-bottom">
+  <div class="controls">
+    <button class="btn btn-ghost" id="replayBtn" title="Сначала" aria-label="Сначала">↺</button>
+    <button class="btn btn-primary" id="grabBtn">Взять груз</button>
+    <button class="btn btn-primary" id="releaseBtn" disabled>Отпустить</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var stage = document.getElementById('stage');
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xfafaf8);
+  scene.fog = new THREE.Fog(0xfafaf8, 80, 220);
+
+  var camera = new THREE.PerspectiveCamera(40, window.innerWidth/window.innerHeight, 0.1, 500);
+  var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0xfafaf8, 1);
+  stage.appendChild(renderer.domElement);
+
+  var hemi = new THREE.HemisphereLight(0xffffff, 0xd8d4c8, 0.75);
+  scene.add(hemi);
+  var key = new THREE.DirectionalLight(0xffffff, 0.9);
+  key.position.set(40, 70, 50);
+  scene.add(key);
+  var fill = new THREE.DirectionalLight(0xffffff, 0.35);
+  fill.position.set(-50, 30, -40);
+  scene.add(fill);
+
+  var floorGeo = new THREE.CircleGeometry(220, 64);
+  var floorMat = new THREE.MeshStandardMaterial({ color: 0xf1efe8, roughness: 1, metalness: 0 });
+  var floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI/2;
+  floor.position.y = -8;
+  scene.add(floor);
+
+  var debrisGroup = new THREE.Group();
+  var debrisMat = new THREE.MeshStandardMaterial({ color: 0xdedad0, roughness: 0.95 });
+  for (var d = 0; d < 26; d++) {
+    var s = 1.3 + Math.random()*3.2;
+    var geo = new THREE.BoxGeometry(s, s*0.55, s*0.8);
+    var m = new THREE.Mesh(geo, debrisMat);
+    var ang = Math.random()*Math.PI*2;
+    var rad = 55 + Math.random()*55;
+    m.position.set(Math.cos(ang)*rad, -8 + s*0.27, Math.sin(ang)*rad);
+    m.rotation.y = Math.random()*Math.PI;
+    m.rotation.z = (Math.random()-0.5)*0.25;
+    debrisGroup.add(m);
+  }
+  scene.add(debrisGroup);
+
+  // ---------- Материалы бота ----------
+  var botBodyMat = new THREE.MeshStandardMaterial({ color: 0x15140f, roughness: 0.32, metalness: 0.6 });
+  var botSphereMat = new THREE.MeshStandardMaterial({ color: 0x0c0b08, roughness: 0.22, metalness: 0.75 });
+  var tipMat = new THREE.MeshStandardMaterial({ color: 0x33322c, roughness: 0.18, metalness: 0.85 });
+  var linkMat = new THREE.MeshBasicMaterial({ color: 0xc4471f, transparent: true, opacity: 0 });
+
+  var legGeo = new THREE.ConeGeometry(0.4, 2.1, 9);
+  var sphereGeo = new THREE.SphereGeometry(0.62, 14, 14);
+  var tipGeo = new THREE.SphereGeometry(0.15, 7, 7);
+
+  function makeBot(){
+    var g = new THREE.Group();
+    var inner = new THREE.Group();
+    g.add(inner);
+    var sphere = new THREE.Mesh(sphereGeo, botSphereMat);
+    inner.add(sphere);
+    var legA = new THREE.Mesh(legGeo, botBodyMat);
+    legA.position.set(0, 0, 1.3); legA.rotation.x = Math.PI/2;
+    inner.add(legA);
+    var legB = new THREE.Mesh(legGeo, botBodyMat);
+    legB.position.set(0, 0, -1.3); legB.rotation.x = -Math.PI/2;
+    inner.add(legB);
+    var tip1 = new THREE.Mesh(tipGeo, tipMat);
+    tip1.position.set(0, 0, 2.35); inner.add(tip1);
+    var tip2 = new THREE.Mesh(tipGeo, tipMat);
+    tip2.position.set(0, 0, -2.35); inner.add(tip2);
+    g.userData.inner = inner;
+    return g;
+  }
+
+  // ========================================================
+  // ЦЕЛЬ: ЕДИНАЯ ЛЕНТА-КОНЕЧНОСТЬ, которая обвивает груз как
+  // согнутая "рука": идёт снизу под кирпичом (ладонь), поднимается
+  // по ОДНОЙ боковой стороне, перекидывается через верх узкой
+  // полосой, спускается по ПРОТИВОПОЛОЖНОЙ стороне.
+  // Это даёт ощущение одной протяжённой конечности, не трёх
+  // разрозненных плоскостей.
+  //
+  // Параметризуем конечность как путь по длине S (0..1) и шир��не W,
+  // раскладывая боты вдоль пути несколькими параллельными рядами
+  // (как сложенные пальцы одной широкой ленты).
+  // ========================================================
+
+  var CARGO_W = 10, CARGO_H = 4, CARGO_D = 10;
+  var cargoRestY = -6.0;
+
+  var PALM_HALF_W = CARGO_D/2 - 0.3; // ширина ленты вдоль оси Z (глубина кирпича)
+  var ROWS = 5; // число параллельных рядов внутри ленты (толщина "ладони")
+  var rowOffsets = [-1.9, -0.95, 0, 0.95, 1.9]; // смещения рядов вдоль Z внутри ленты
+
+  // Строим путь конечности в локальных координатах (x,y) относительно
+  // центра кирпича, как ломаную из контрольных точек:
+  // старт снаружи снизу -> под дном -> вверх по правой стороне ->
+  // по верху -> вниз немного по левой стороне (не до конца - рука
+  // "накрывает" верх, не обвивает полностью).
+  var halfW = CARGO_W/2, halfH = CARGO_H/2;
+  var pad = 0.8; // отступ ленты от поверхности кирпича
+
+  var cr = 2.2; // радиус скругления углов пути (больше точек у каждого угла = мягче изгиб)
+  var pathPoints = [
+    [-halfW - 5.5, -halfH - pad - 1.0],      // старт далеко слева снизу, на отлёте — удлиняет ленту
+    [-halfW - pad - 1.0, -halfH - pad - 0.3],
+    [-halfW - pad,       -halfH - pad],       // подход под левый нижний угол
+    [-halfW*0.5,         -halfH - pad],       // под дном, левая четверть
+    [0,                  -halfH - pad],        // центр дна
+    [halfW*0.5,          -halfH - pad],        // под дном, правая четверть
+    [halfW + pad - cr*0.3, -halfH - pad + cr*0.15], // мягкий заход в правый нижний угол
+    [halfW + pad,         -halfH*0.6],          // скруглённый переход на боковую грань
+    [halfW + pad,          0],                   // середина правой стороны
+    [halfW + pad,          halfH*0.6],           // к верхней грани
+    [halfW + pad - cr*0.3, halfH + pad - cr*0.15], // мягкий заход в правый верхний угол
+    [halfW*0.6,            halfH + pad],         // на верх, правая часть
+    [halfW*0.1,            halfH + pad],         // центр верха
+    [-halfW*0.35,          halfH + pad]           // финиш на верху, не доходя до левого края
+  ];
+
+  function catmullRom(points, t){
+    // t в [0, points.length-1], возвращает точку на сглаженной кривой
+    var p = Math.floor(t);
+    var local = t - p;
+    var p0 = points[Math.max(p-1,0)];
+    var p1 = points[p];
+    var p2 = points[Math.min(p+1, points.length-1)];
+    var p3 = points[Math.min(p+2, points.length-1)];
+    var t2 = local*local, t3 = t2*local;
+    function c(a,b,c,d){
+      return 0.5*((2*b) + (-a+c)*local + (2*a-5*b+4*c-d)*t2 + (-a+3*b-3*c+d)*t3);
+    }
+    return [c(p0[0],p1[0],p2[0],p3[0]), c(p0[1],p1[1],p2[1],p3[1])];
+  }
+
+  var N_PER_ROW = 46;
+  var N = N_PER_ROW * ROWS;
+
+  var targetPositions = []; // [x,y,z]
+  var pathIndexOf = []; // позиция вдоль пути (0..1) для каждого бота — нужна для порядка сборки
+
+  for (var row = 0; row < ROWS; row++){
+    for (var s = 0; s < N_PER_ROW; s++){
+      var tt = (s/(N_PER_ROW-1)) * (pathPoints.length-1);
+      var xy = catmullRom(pathPoints, tt);
+      targetPositions.push([xy[0], xy[1], rowOffsets[row]]);
+      pathIndexOf.push(s/(N_PER_ROW-1));
+    }
+  }
+
+  var botGroup = new THREE.Group();
+  scene.add(botGroup);
+
+  var startPositions = [];
+  var startAxis = [];
+  for (var i = 0; i < N; i++) {
+    var ang = Math.random()*Math.PI*2;
+    var rad = 48 + Math.random()*58;
+    var h = Math.random()*14;
+    startPositions.push([Math.cos(ang)*rad, h, Math.sin(ang)*rad]);
+    startAxis.push(new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize());
+  }
+
+  var bots = [];
+  for (var i = 0; i < N; i++) {
+    var b = makeBot();
+    b.position.set(startPositions[i][0], startPositions[i][1], startPositions[i][2]);
+    botGroup.add(b);
+    bots.push(b);
+  }
+
+  // Задержка старта пропорциональна положению вдоль пути — конечность
+  // "вырастает" последовательно от начала (нижний левый) к концу (верх),
+  // а не собирается вся сразу вперемешку.
+  var arriveDelay = [];
+  for (var i = 0; i < N; i++) {
+    arriveDelay.push(pathIndexOf[i] * 0.78 + Math.random()*0.08);
+  }
+  var tumbleSpins = [];
+  for (var i = 0; i < N; i++) tumbleSpins.push(2.0 + Math.random()*2.4);
+
+  // ---------- Связи: внутри ряда (вдоль ленты) и между соседними рядами ----------
+  var linkPairs = [];
+  for (var row = 0; row < ROWS; row++){
+    for (var s = 0; s < N_PER_ROW-1; s++){
+      linkPairs.push([row*N_PER_ROW+s, row*N_PER_ROW+s+1]);
+    }
+  }
+  for (var s = 0; s < N_PER_ROW; s += 3){
+    for (var row = 0; row < ROWS-1; row++){
+      linkPairs.push([row*N_PER_ROW+s, (row+1)*N_PER_ROW+s]);
+    }
+  }
+
+  var linkMeshes = [];
+  var linkCylGeo = new THREE.CylinderGeometry(0.055, 0.055, 1, 6);
+  for (var i = 0; i < linkPairs.length; i++) {
+    var m = new THREE.Mesh(linkCylGeo, linkMat.clone());
+    scene.add(m);
+    linkMeshes.push(m);
+  }
+  function updateLink(mesh, p1, p2, opacity){
+    var dx=p2[0]-p1[0], dy=p2[1]-p1[1], dz=p2[2]-p1[2];
+    var len = Math.sqrt(dx*dx+dy*dy+dz*dz);
+    mesh.position.set((p1[0]+p2[0])/2,(p1[1]+p2[1])/2,(p1[2]+p2[2])/2);
+    mesh.scale.set(1,len,1);
+    mesh.lookAt(p2[0],p2[1],p2[2]);
+    mesh.rotateX(Math.PI/2);
+    mesh.material.opacity = opacity;
+  }
+
+  // ---------- Груз ----------
+  var cargoGeo = new THREE.BoxGeometry(CARGO_W, CARGO_H, CARGO_D);
+  var cargoEdges = new THREE.EdgesGeometry(cargoGeo);
+  var cargoMat = new THREE.MeshStandardMaterial({ color: 0xb7b2a4, roughness: 0.8 });
+  var cargo = new THREE.Mesh(cargoGeo, cargoMat);
+  var cargoLine = new THREE.LineSegments(cargoEdges, new THREE.LineBasicMaterial({ color: 0x8c8878 }));
+  cargo.add(cargoLine);
+  cargo.position.set(0, cargoRestY, 0);
+  scene.add(cargo);
+
+  // ---------- Состояние ----------
+  var state = "idle";
+  var t = 0;
+  var GRAB_DUR = 4.2;
+  var LIFT_DUR = 1.6;
+  var RELEASE_DUR = 2.8;
+
+  function ease(x){ return x<0.5 ? 4*x*x*x : 1-Math.pow(-2*x+2,3)/2; }
+  function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+  function lerp(a,b,f){ return a+(b-a)*f; }
+
+  var phaseLabel = document.getElementById('phaseLabel');
+  var botCountEl = document.getElementById('botCount');
+
+  function setPhaseText(text){
+    phaseLabel.style.opacity = 0;
+    setTimeout(function(){ phaseLabel.textContent = text; phaseLabel.style.opacity = 1; }, 120);
+  }
+
+  var cargoLiftY = 11.5;
+
+  function updateIdle(){
+    for (var i = 0; i < N; i++){
+      bots[i].position.set(startPositions[i][0], startPositions[i][1] + Math.sin(performance.now()*0.0006+i)*0.4, startPositions[i][2]);
+      bots[i].userData.inner.rotation.set(0,0,0);
+    }
+    cargo.position.y = cargoRestY;
+    for (var i=0;i<linkMeshes.length;i++) linkMeshes[i].material.opacity = 0;
+    botCountEl.textContent = "0 / " + N;
+  }
+
+  function worldTarget(i, cargoY){
+    return [targetPositions[i][0], cargoY + targetPositions[i][1], targetPositions[i][2]];
+  }
+
+  function updateGrabbing(localT){
+    var settled = 0;
+    var cargoY = cargoRestY;
+    var positions = [];
+
+    for (var i = 0; i < N; i++){
+      var start = arriveDelay[i];
+      var dur = 0.65;
+      var p = clamp01((localT/GRAB_DUR - start) / dur);
+      var gp = ease(p);
+
+      var tgt = worldTarget(i, cargoY);
+      var sx = startPositions[i][0], sy = startPositions[i][1], sz = startPositions[i][2];
+      var arc = Math.sin(p * Math.PI) * 7.0;
+
+      var x = lerp(sx, tgt[0], gp);
+      var y = lerp(sy, tgt[1], gp) + arc * (1-p);
+      var z = lerp(sz, tgt[2], gp);
+
+      bots[i].position.set(x, y, z);
+
+      var spin = tumbleSpins[i] * Math.PI * 2 * (1 - gp*gp);
+      var q = new THREE.Quaternion().setFromAxisAngle(startAxis[i], spin);
+      bots[i].userData.inner.quaternion.copy(q);
+
+      if (p >= 0.995) settled++;
+      positions.push([x,y,z]);
+    }
+
+    botCountEl.textContent = settled + " / " + N;
+
+    for (var i = 0; i < linkPairs.length; i++){
+      var ia = linkPairs[i][0], ib = linkPairs[i][1];
+      var pa = clamp01((localT/GRAB_DUR - arriveDelay[ia]) / 0.65);
+      var pb = clamp01((localT/GRAB_DUR - arriveDelay[ib]) / 0.65);
+      var la = Math.min(pa, pb) > 0.9 ? Math.min(pa,pb) : 0;
+      updateLink(linkMeshes[i], positions[ia], positions[ib], la*0.8);
+    }
+
+    cargo.position.y = cargoY;
+    return settled >= N;
+  }
+
+  function updateLifting(localT){
+    var p = ease(clamp01(localT / LIFT_DUR));
+    var cargoY = lerp(cargoRestY, cargoLiftY, p);
+    cargo.position.y = cargoY;
+    var positions = [];
+    for (var i = 0; i < N; i++){
+      var tgt = worldTarget(i, cargoY);
+      bots[i].position.set(tgt[0], tgt[1], tgt[2]);
+      positions.push(tgt);
+    }
+    for (var i = 0; i < linkPairs.length; i++){
+      updateLink(linkMeshes[i], positions[linkPairs[i][0]], positions[linkPairs[i][1]], 0.8);
+    }
+    botCountEl.textContent = N + " / " + N;
+    debrisGroup.position.y = -p*0.4;
+    return p >= 1;
+  }
+
+  function updateHeld(){
+    var cargoY = cargoLiftY + Math.sin(performance.now()*0.0009)*0.25;
+    cargo.position.y = cargoY;
+    var positions = [];
+    for (var i = 0; i < N; i++){
+      var tgt = worldTarget(i, cargoY);
+      bots[i].position.set(tgt[0], tgt[1], tgt[2]);
+      positions.push(tgt);
+    }
+    for (var i = 0; i < linkPairs.length; i++){
+      updateLink(linkMeshes[i], positions[linkPairs[i][0]], positions[linkPairs[i][1]], 0.8);
+    }
+    botCountEl.textContent = N + " / " + N;
+  }
+
+  function updateReleasing(localT){
+    var p = ease(clamp01(localT / RELEASE_DUR));
+    var cargoY = lerp(cargoLiftY, cargoRestY, Math.min(p*1.3,1));
+    cargo.position.y = cargoY;
+
+    var settled = 0;
+    for (var i = 0; i < N; i++){
+      // Отпускаем в ОБРАТНОМ порядке сборки — конечность "разжимается"
+      // с конца (верх) к началу (низ), выглядит как раскрытие хватки.
+      var releaseOrder = 1 - pathIndexOf[i];
+      var delay = releaseOrder * 0.6;
+      var lp = clamp01((p - delay) / (1-delay+0.0001));
+      var gp = ease(lp);
+      var fromTgt = worldTarget(i, cargoLiftY);
+      var x = lerp(fromTgt[0], startPositions[i][0], gp);
+      var y = lerp(fromTgt[1], startPositions[i][1], gp) + Math.sin(lp*Math.PI)*5;
+      var z = lerp(fromTgt[2], startPositions[i][2], gp);
+      bots[i].position.set(x,y,z);
+
+      var spin = tumbleSpins[i]*Math.PI*2*gp*gp;
+      var q = new THREE.Quaternion().setFromAxisAngle(startAxis[i], spin);
+      bots[i].userData.inner.quaternion.copy(q);
+
+      if (lp < 0.02) settled++;
+    }
+    botCountEl.textContent = settled + " / " + N;
+
+    for (var i = 0; i < linkPairs.length; i++){
+      var ia = linkPairs[i][0], ib = linkPairs[i][1];
+      var ra = 1-pathIndexOf[ia], rb = 1-pathIndexOf[ib];
+      var da = ra*0.6, db = rb*0.6;
+      var la = clamp01((p-da)/0.15), lb = clamp01((p-db)/0.15);
+      var opac = (1 - Math.max(la,lb)) * 0.8;
+      updateLink(linkMeshes[i], [bots[ia].position.x,bots[ia].position.y,bots[ia].position.z],
+                                  [bots[ib].position.x,bots[ib].position.y,bots[ib].position.z], Math.max(opac,0));
+    }
+
+    debrisGroup.position.y = -(1-p)*0.4;
+    return p >= 1;
+  }
+
+  // ---------- Controls ----------
+  var grabBtn = document.getElementById('grabBtn');
+  var releaseBtn = document.getElementById('releaseBtn');
+  var replayBtn = document.getElementById('replayBtn');
+  var intro = document.getElementById('intro');
+  var startBtn = document.getElementById('startBtn');
+
+  var phaseStartTime = 0;
+  function switchState(s, label){
+    state = s; phaseStartTime = t;
+    setPhaseText(label);
+    grabBtn.disabled = (s !== "idle");
+    releaseBtn.disabled = (s !== "held");
+  }
+
+  grabBtn.addEventListener('click', function(){
+    if (state !== "idle") return;
+    switchState("grabbing", "Боты выстраиваются в конечность и обвивают груз");
+  });
+  releaseBtn.addEventListener('click', function(){
+    if (state !== "held") return;
+    switchState("releasing", "Хватка раскрывается — боты возвращаются в рой");
+  });
+  replayBtn.addEventListener('click', function(){
+    switchState("idle", "Рой рассредоточен");
+  });
+  startBtn.addEventListener('click', function(){
+    intro.classList.add('hidden');
+    switchState("idle", "Рой рассредоточен, груз на месте");
+  });
+
+  function render(){ renderer.render(scene, camera); }
+
+  var clock = new THREE.Clock();
+  var camT = 0;
+  function animate(){
+    requestAnimationFrame(animate);
+    var dt = clock.getDelta();
+    t += dt;
+    camT += dt;
+
+    var localT = t - phaseStartTime;
+
+    if (state === "idle"){
+      updateIdle();
+    } else if (state === "grabbing"){
+      var done = updateGrabbing(localT);
+      if (done) switchState("lifting", "Конечность сформирована — подъём груза");
+    } else if (state === "lifting"){
+      var done2 = updateLifting(localT);
+      if (done2) switchState("held", "Груз удерживается конечностью роя");
+    } else if (state === "held"){
+      updateHeld();
+    } else if (state === "releasing"){
+      var done3 = updateReleasing(localT);
+      if (done3) switchState("idle", "Рой рассредоточен");
+    }
+
+    var camAngle = camT * 0.08;
+    var liftAmt = (state==="held"||state==="lifting") ? 1 : (state==="releasing" ? (1-clamp01(localT/RELEASE_DUR)) : 0);
+    var camDist = lerp(95, 82, liftAmt);
+    var camHeight = lerp(52, 46, liftAmt) + liftAmt*9;
+    camera.position.set(Math.sin(camAngle)*camDist, camHeight, Math.cos(camAngle)*camDist);
+    camera.lookAt(0, liftAmt*5, 0);
+
+    render();
+  }
+
+  window.addEventListener('resize', function(){
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  updateIdle();
+  render();
+  animate();
+})();
+</script>
+</body>
+</html>
